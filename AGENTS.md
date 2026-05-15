@@ -54,3 +54,37 @@ Before committing, run:
 gofmt -w cmd internal
 go test ./...
 ```
+
+## PR Workflow
+
+- Do not push directly to `main`.
+- Create a branch for every change and open a pull request against `main`.
+- Keep PRs focused on one shippable goal.
+- Prefer squash merge so `main` stays as a clean sequence of Conventional
+  Commits.
+- The squash commit title should be the final Conventional Commit message for
+  the change.
+- Delete branches after merge.
+
+Branch names should use:
+
+```text
+<type>/<short-kebab-topic>
+```
+
+Examples:
+
+```text
+feat/session-ingest
+fix/ipc-stale-socket
+docs/pr-workflow
+test/store-lineage
+chore/dependency-refresh
+```
+
+If a tracked issue exists, include it after the type:
+
+```text
+feat/42-session-filters
+fix/103-windows-pipe-timeout
+```
