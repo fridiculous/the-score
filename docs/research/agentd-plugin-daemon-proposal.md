@@ -390,6 +390,7 @@ Examples:
 - Claude Agent View state files.
 - Codex app-server.
 - OpenCode HTTP/SSE server.
+- RoboRev daemon API and JSONL event stream.
 - OpenClaw gateway/session state and lifecycle hooks.
 - Hermes Agent CLI/gateway state and plugin hooks.
 - NanoClaw SQLite/session/container state.
@@ -496,6 +497,28 @@ Status confidence: high for runtime liveness, low to medium for semantic
 agent state unless guest-side instrumentation is installed.
 
 ## Candidate Community Plugins
+
+### RoboRev
+
+RoboRev should be a strong source integration for review-oriented sessions. It
+already runs a local daemon, stores durable review jobs, exposes a REST/OpenAPI
+surface and JSONL event stream, supports multiple coding agents, and uses git
+hooks to queue work as commits are produced.
+
+Best integration path:
+
+- discover the configured RoboRev daemon address
+- consume public job/review/repo/branch endpoints
+- subscribe to `roborev stream` or the daemon event stream
+- map review, analyze, fix, and refine jobs to Score sessions
+- map repo path and branch to workspace resources
+- map commit SHA, dirty diff marker, verdict, findings, and job ID to artifacts
+  and `meta.roborev`
+- represent refine iterations or fix jobs as child sessions when visible
+
+RoboRev is also a reference implementation for how a local daemon can expose
+both human-friendly CLI commands and machine-friendly API/event surfaces without
+requiring a hosted service.
 
 ### OpenClaw
 
@@ -620,6 +643,7 @@ V1 should include:
 - SQLite event/state store.
 - OpenCode plugin using server APIs and SSE.
 - Claude plugin using Agent View state files and hooks where available.
+- RoboRev plugin using daemon API and event stream for review-job sessions.
 - tmux/process plugin for fallback discovery.
 - git worktree plugin for workspace topology.
 - JSON output suitable for external dashboards.
