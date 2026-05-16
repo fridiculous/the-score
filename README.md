@@ -32,6 +32,25 @@ go run ./cmd/score sessions
 go run ./cmd/score processes
 ```
 
+To automatically observe a command as a session, run it through `score run`:
+
+```bash
+go run ./cmd/score run --source native -- sleep 30
+```
+
+While that command is running, another terminal will show it:
+
+```bash
+go run ./cmd/score sessions
+```
+
+Use this shape for terminal agents that Score launches:
+
+```bash
+go run ./cmd/score run --source codex -- codex
+go run ./cmd/score run --source claude -- claude
+```
+
 Report a session through the native observation API:
 
 ```bash
