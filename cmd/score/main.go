@@ -26,6 +26,12 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "start":
+		runStart(os.Args[2:])
+	case "stop":
+		runStop(os.Args[2:])
+	case "status":
+		runStatus(os.Args[2:])
 	case "sessions":
 		runSessions(os.Args[2:])
 	case "processes":
@@ -56,6 +62,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `score is the CLI client for scored.
 
 Usage:
+  score start [--scored PATH]
+  score stop
+  score status [--json]
   score sessions [--all] [--status working,blocked] [--workspace PATH] [--source ID] [--json]
   score processes [--json]
   score workspaces [--json]
@@ -339,7 +348,7 @@ func runObserveSession(args []string) {
 func runObservedCommand(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	id := fs.String("id", "", "")
-	source := fs.String("source", "run", "")
+	source := fs.String("source", "", "")
 	workspace := fs.String("workspace", "", "")
 	title := fs.String("title", "", "")
 	parent := fs.String("parent", "", "")
@@ -358,7 +367,7 @@ func runObservedCommand(args []string) {
 		*workspace = wd
 	}
 	if *source == "" {
-		*source = "run"
+		*source = inferSource(commandArgs[0])
 	}
 	if *id == "" {
 		*id = fmt.Sprintf("%s:%d", *source, time.Now().UnixNano())
@@ -453,6 +462,14 @@ func runObservedCommand(args []string) {
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
+}
+
+func inferSource(command string) string {
+	base := strings.TrimSuffix(filepath.Base(command), ".exe")
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return "run"
+	}
+	return strings.ToLower(base)
 }
 
 func upsertRunSession(id, source, workspace, workspaceID, title, parent, root string, runtimeIDs []string, status model.Status, detail string, startedAt time.Time, endedAt *time.Time, commandArgs []string) {

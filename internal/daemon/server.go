@@ -29,6 +29,10 @@ func New(logger *slog.Logger) *Server {
 	}
 }
 
+func (s *Server) SetShutdown(shutdown func()) {
+	s.handler.SetShutdown(shutdown)
+}
+
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	go func() {
 		<-ctx.Done()

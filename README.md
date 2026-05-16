@@ -11,7 +11,7 @@ local API.
 Run the daemon:
 
 ```bash
-go run ./cmd/scored
+go run ./cmd/score start
 ```
 
 For signal/shutdown testing, build and run the daemon binary directly:
@@ -47,8 +47,14 @@ go run ./cmd/score sessions
 Use this shape for terminal agents that Score launches:
 
 ```bash
-go run ./cmd/score run --source codex -- codex
-go run ./cmd/score run --source claude -- claude
+go run ./cmd/score run -- codex
+go run ./cmd/score run -- claude
+```
+
+Stop the daemon:
+
+```bash
+go run ./cmd/score stop
 ```
 
 Report a session through the native observation API:

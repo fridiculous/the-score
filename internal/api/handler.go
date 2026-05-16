@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -18,10 +19,16 @@ import (
 type Handler struct {
 	store     *store.Store
 	processes runtime.ProcessLister
+	startedAt time.Time
+	shutdown  func()
 }
 
 func NewHandler(st *store.Store, processes runtime.ProcessLister) *Handler {
-	return &Handler{store: st, processes: processes}
+	return &Handler{store: st, processes: processes, startedAt: time.Now().UTC()}
+}
+
+func (h *Handler) SetShutdown(shutdown func()) {
+	h.shutdown = shutdown
 }
 
 func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
@@ -63,8 +70,18 @@ func (h *Handler) Handle(method string, params json.RawMessage) (interface{}, *E
 			"name":      "The Score",
 			"daemon":    "scored",
 			"api":       "score-jsonrpc/v1",
-			"startedAt": time.Now().UTC(),
+			"pid":       os.Getpid(),
+			"startedAt": h.startedAt,
 		}, nil
+	case "daemon/shutdown":
+		if h.shutdown == nil {
+			return nil, &Error{Code: ErrCodeInternal, Message: "daemon shutdown is not configured"}
+		}
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			h.shutdown()
+		}()
+		return map[string]bool{"shutdown": true}, nil
 	case "health/check":
 		return map[string]string{"status": "ok"}, nil
 	case "sessions/list":
