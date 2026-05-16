@@ -25,6 +25,7 @@ func runStart(args []string) {
 		fmt.Printf("scored already running pid=%v socket=%s\n", info["pid"], ipc.DefaultAddress())
 		return
 	}
+	removeStaleSocket()
 
 	path := *scoredPath
 	if path == "" {
@@ -127,7 +128,7 @@ func runStatus(args []string) {
 }
 
 func daemonInfo() (map[string]interface{}, bool) {
-	c, _, err := client.Dial()
+	c, _, err := client.DialTimeout(250 * time.Millisecond)
 	if err != nil {
 		return nil, false
 	}
@@ -229,4 +230,14 @@ func killProcess(pid int) error {
 		return err
 	}
 	return proc.Kill()
+}
+
+func removeStaleSocket() {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	address := ipc.DefaultAddress()
+	if filepath.Ext(address) == ".sock" {
+		_ = os.Remove(address)
+	}
 }

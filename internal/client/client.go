@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"time"
 
 	"github.com/fridiculous/the-score/internal/api"
 	"github.com/fridiculous/the-score/internal/ipc"
@@ -19,7 +20,11 @@ type Client struct {
 }
 
 func Dial() (*Client, string, error) {
-	conn, address, err := ipc.DialDefault()
+	return DialTimeout(time.Second)
+}
+
+func DialTimeout(timeout time.Duration) (*Client, string, error) {
+	conn, address, err := ipc.DialDefaultTimeout(timeout)
 	if err != nil {
 		return nil, address, err
 	}

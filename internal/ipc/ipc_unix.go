@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"time"
 )
 
 func listen(address string) (net.Listener, error) {
@@ -20,6 +21,10 @@ func listen(address string) (net.Listener, error) {
 
 func dial(address string) (net.Conn, error) {
 	return net.Dial("unix", address)
+}
+
+func dialTimeout(address string, timeout time.Duration) (net.Conn, error) {
+	return net.DialTimeout("unix", address, timeout)
 }
 
 func userID() string {
