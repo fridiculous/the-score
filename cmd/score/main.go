@@ -5,7 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -20,6 +26,12 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "start":
+		runStart(os.Args[2:])
+	case "stop":
+		runStop(os.Args[2:])
+	case "status":
+		runStatus(os.Args[2:])
 	case "sessions":
 		runSessions(os.Args[2:])
 	case "processes":
@@ -38,6 +50,8 @@ func main() {
 		runInspect(os.Args[2:])
 	case "observe-session":
 		runObserveSession(os.Args[2:])
+	case "run":
+		runObservedCommand(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -48,6 +62,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `score is the CLI client for scored.
 
 Usage:
+  score start [--scored PATH]
+  score stop
+  score status [--json]
   score sessions [--all] [--status working,blocked] [--workspace PATH] [--source ID] [--json]
   score processes [--json]
   score workspaces [--json]
@@ -57,6 +74,7 @@ Usage:
   score sources [doctor [source-id]] [--json]
   score inspect <id> [--json]
   score observe-session --id ID --status STATUS [--source ID] [--workspace PATH] [--activity TEXT]
+  score run [--id ID] [--source ID] [--workspace PATH] [--title TEXT] -- COMMAND [ARGS...]
 `)
 }
 
@@ -325,6 +343,181 @@ func runObserveSession(args []string) {
 		return
 	}
 	fmt.Println(result.ID)
+}
+
+func runObservedCommand(args []string) {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	id := fs.String("id", "", "")
+	source := fs.String("source", "", "")
+	workspace := fs.String("workspace", "", "")
+	title := fs.String("title", "", "")
+	parent := fs.String("parent", "", "")
+	root := fs.String("root", "", "")
+	_ = fs.Parse(args)
+
+	commandArgs := fs.Args()
+	if len(commandArgs) == 0 {
+		die(fmt.Errorf("COMMAND is required"))
+	}
+	if *workspace == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			die(err)
+		}
+		*workspace = wd
+	}
+	if *source == "" {
+		*source = inferSource(commandArgs[0])
+	}
+	if *id == "" {
+		*id = fmt.Sprintf("%s:%d", *source, time.Now().UnixNano())
+	}
+	if *title == "" {
+		*title = filepath.Base(commandArgs[0])
+	}
+	if *parent == "" {
+		*parent = os.Getenv("SCORE_SESSION_ID")
+	}
+	if *root == "" {
+		*root = os.Getenv("SCORE_ROOT_SESSION_ID")
+	}
+	if *root == "" {
+		if *parent != "" {
+			*root = *parent
+		} else {
+			*root = *id
+		}
+	}
+
+	var health map[string]string
+	call("health/check", nil, &health)
+
+	cmd := exec.Command(commandArgs[0], commandArgs[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Dir = *workspace
+	workspaceID := "workspace:" + *workspace
+	cmd.Env = append(os.Environ(),
+		"SCORE_SESSION_ID="+*id,
+		"SCORE_PARENT_SESSION_ID="+*parent,
+		"SCORE_ROOT_SESSION_ID="+*root,
+		"SCORE_WORKSPACE_ID="+workspaceID,
+		"SCORE_SOURCE="+*source,
+	)
+
+	startedAt := time.Now().UTC()
+	if err := cmd.Start(); err != nil {
+		endedAt := time.Now().UTC()
+		upsertRunSession(*id, *source, *workspace, workspaceID, *title, *parent, *root, nil, model.StatusFailed, "start failed: "+err.Error(), startedAt, &endedAt, commandArgs)
+		die(err)
+	}
+
+	runtimeID := "process:" + strconv.Itoa(cmd.Process.Pid)
+	upsertRunSession(*id, *source, *workspace, workspaceID, *title, *parent, *root, []string{runtimeID}, model.StatusWorking, "running: "+strings.Join(commandArgs, " "), startedAt, nil, commandArgs)
+	upsertRunWorkspace(workspaceID, *workspace, *id, *source)
+	if *parent != "" {
+		upsertRunEdge(*id, *parent, *source)
+	}
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	done := make(chan struct{})
+	var stopped atomic.Bool
+	go func() {
+		select {
+		case sig := <-signals:
+			stopped.Store(true)
+			_ = cmd.Process.Signal(sig)
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				_ = cmd.Process.Kill()
+			}
+		case <-done:
+		}
+	}()
+
+	err := cmd.Wait()
+	close(done)
+	endedAt := time.Now().UTC()
+
+	status := model.StatusCompleted
+	detail := "completed: " + strings.Join(commandArgs, " ")
+	exitCode := 0
+	if stopped.Load() {
+		status = model.StatusStopped
+		detail = "stopped: " + strings.Join(commandArgs, " ")
+		exitCode = 130
+	} else if err != nil {
+		status = model.StatusFailed
+		detail = "failed: " + err.Error()
+		exitCode = 1
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		}
+	}
+	upsertRunSession(*id, *source, *workspace, workspaceID, *title, *parent, *root, []string{runtimeID}, status, detail, startedAt, &endedAt, commandArgs)
+	if exitCode != 0 {
+		os.Exit(exitCode)
+	}
+}
+
+func inferSource(command string) string {
+	base := strings.TrimSuffix(filepath.Base(command), ".exe")
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return "run"
+	}
+	return strings.ToLower(base)
+}
+
+func upsertRunSession(id, source, workspace, workspaceID, title, parent, root string, runtimeIDs []string, status model.Status, detail string, startedAt time.Time, endedAt *time.Time, commandArgs []string) {
+	var result model.Session
+	call("observations/upsertSession", model.Session{
+		ID:              id,
+		Status:          status,
+		StatusDetail:    detail,
+		Title:           title,
+		Source:          source,
+		CWD:             workspace,
+		ParentSessionID: parent,
+		RootSessionID:   root,
+		RuntimeIDs:      runtimeIDs,
+		WorkspaceIDs:    []string{workspaceID},
+		Confidence:      model.ConfidenceHigh,
+		StartedAt:       startedAt,
+		LastActivityAt:  time.Now().UTC(),
+		EndedAt:         endedAt,
+		Meta: map[string]interface{}{
+			"run": map[string]interface{}{
+				"command": commandArgs,
+			},
+		},
+	}, &result)
+}
+
+func upsertRunWorkspace(workspaceID, workspace, sessionID, source string) {
+	var ws model.Workspace
+	call("observations/upsertWorkspace", model.Workspace{
+		ID:         workspaceID,
+		Kind:       "workspace",
+		Path:       workspace,
+		SessionIDs: []string{sessionID},
+		Source:     source,
+		Confidence: model.ConfidenceHigh,
+	}, &ws)
+}
+
+func upsertRunEdge(id, parent, source string) {
+	var edge model.Edge
+	call("observations/upsertEdge", model.Edge{
+		From:       id,
+		To:         parent,
+		Type:       "spawned_by",
+		Source:     source,
+		Confidence: model.ConfidenceHigh,
+	}, &edge)
 }
 
 func call(method string, params interface{}, result interface{}) {

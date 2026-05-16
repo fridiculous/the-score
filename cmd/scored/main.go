@@ -36,6 +36,10 @@ func main() {
 	defer cancel()
 
 	server := daemon.New(logger)
+	server.SetShutdown(func() {
+		cancel()
+		_ = listener.Close()
+	})
 	logger.Info("scored listening", "address", address)
 	if err := server.Serve(ctx, listener); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintf(os.Stderr, "scored: %v\n", err)

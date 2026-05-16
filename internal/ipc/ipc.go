@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 const EnvSocket = "SCORE_SOCKET"
@@ -34,5 +35,11 @@ func ListenDefault() (net.Listener, string, error) {
 func DialDefault() (net.Conn, string, error) {
 	address := DefaultAddress()
 	conn, err := dial(address)
+	return conn, address, err
+}
+
+func DialDefaultTimeout(timeout time.Duration) (net.Conn, string, error) {
+	address := DefaultAddress()
+	conn, err := dialTimeout(address, timeout)
 	return conn, address, err
 }

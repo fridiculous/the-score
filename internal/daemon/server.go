@@ -29,6 +29,10 @@ func New(logger *slog.Logger) *Server {
 	}
 }
 
+func (s *Server) SetShutdown(shutdown func()) {
+	s.handler.SetShutdown(shutdown)
+}
+
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	go func() {
 		<-ctx.Done()
@@ -59,9 +63,12 @@ func seedSources(st *store.Store) {
 		{ID: "process", Name: "Process Table", Kind: "runtime", Enabled: true, Status: "active", SupportLevel: "compatible", Capabilities: []string{"processes"}, ObservedAt: now},
 		{ID: "git-worktree", Name: "Git Worktree", Kind: "workspace", Enabled: true, Status: "planned", SupportLevel: "not_installed", Capabilities: []string{"workspaces"}, Diagnostics: []string{"workspace discovery is declared but not implemented in this build"}, ObservedAt: now},
 		{ID: "tmux", Name: "tmux", Kind: "runtime", Enabled: true, Status: "planned", SupportLevel: "not_installed", Capabilities: []string{"processes", "sessions"}, Diagnostics: []string{"tmux integration is declared but not implemented in this build"}, ObservedAt: now},
-		{ID: "claude", Name: "Claude Code", Kind: "session", Enabled: true, Status: "planned", SupportLevel: "not_installed", Capabilities: []string{"sessions", "events", "history"}, Diagnostics: []string{"Claude source is part of the core bundle but not implemented in this build"}, ObservedAt: now},
-		{ID: "codex", Name: "Codex", Kind: "session", Enabled: true, Status: "planned", SupportLevel: "not_installed", Capabilities: []string{"sessions", "events", "history"}, Diagnostics: []string{"Codex source is part of the core bundle but not implemented in this build"}, ObservedAt: now},
-		{ID: "opencode", Name: "OpenCode", Kind: "session", Enabled: true, Status: "planned", SupportLevel: "not_installed", Capabilities: []string{"sessions", "events", "children"}, Diagnostics: []string{"OpenCode source is part of the core bundle but not implemented in this build"}, ObservedAt: now},
+		{ID: "claude", Name: "Claude Code", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper Claude session telemetry is not implemented in this build"}, ObservedAt: now},
+		{ID: "codex", Name: "Codex", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper Codex session telemetry is not implemented in this build"}, ObservedAt: now},
+		{ID: "opencode", Name: "OpenCode", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper OpenCode session telemetry is not implemented in this build"}, ObservedAt: now},
+		{ID: "hermes", Name: "Hermes", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper Hermes session telemetry is not implemented in this build"}, ObservedAt: now},
+		{ID: "openclaw", Name: "OpenClaw", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper OpenClaw session telemetry is not implemented in this build"}, ObservedAt: now},
+		{ID: "nanoclaw", Name: "NanoClaw", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper NanoClaw session telemetry is not implemented in this build"}, ObservedAt: now},
 		{ID: "mcp", Name: "MCP", Kind: "protocol", Enabled: true, Status: "planned", SupportLevel: "not_installed", Capabilities: []string{"tool_calls", "events"}, Diagnostics: []string{"MCP source is part of the core bundle but not implemented in this build"}, ObservedAt: now},
 	}
 	for _, source := range sources {
