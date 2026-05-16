@@ -24,8 +24,16 @@ func main() {
 	}
 	defer listener.Close()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	go func() {
+		<-signals
+		cancel()
+		_ = listener.Close()
+	}()
+	defer cancel()
 
 	server := daemon.New(logger)
 	logger.Info("scored listening", "address", address)

@@ -14,6 +14,16 @@ Run the daemon:
 go run ./cmd/scored
 ```
 
+For signal/shutdown testing, build and run the daemon binary directly:
+
+```bash
+go build -o scored ./cmd/scored
+./scored
+```
+
+`Ctrl-C` should stop `scored` cleanly. When using `go run`, the Go wrapper may
+still report an interrupt exit code even though the daemon shuts down promptly.
+
 In another terminal:
 
 ```bash

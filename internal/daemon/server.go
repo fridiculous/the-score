@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"time"
@@ -29,6 +30,11 @@ func New(logger *slog.Logger) *Server {
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
+	go func() {
+		<-ctx.Done()
+		_ = listener.Close()
+	}()
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -36,6 +42,9 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 			case <-ctx.Done():
 				return nil
 			default:
+				if errors.Is(err, net.ErrClosed) {
+					return nil
+				}
 				return err
 			}
 		}
