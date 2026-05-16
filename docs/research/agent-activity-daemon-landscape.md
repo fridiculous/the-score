@@ -146,6 +146,55 @@ Source:
 
 - https://github.com/chorus-codes/chorus
 
+### RoboRev
+
+RoboRev is a local continuous code-review system for coding agents. It is not a
+general activity registry, but it is highly relevant because it has the same
+daemon-plus-CLI shape, runs locally, auto-detects multiple agent CLIs, watches
+git commits through hooks, maintains persistent review-job state, and exposes a
+daemon API plus event stream.
+
+Useful pieces for this daemon:
+
+- It runs a local daemon with an HTTP API, OpenAPI 3.1 spec, and JSONL event
+  stream.
+- It stores durable job/review state in SQLite and can sync across machines via
+  PostgreSQL.
+- It installs git hooks and treats each commit or dirty diff review as a
+  background job.
+- It supports Codex, Claude Code, Gemini, Copilot, OpenCode, Cursor, Droid,
+  Kilo, Kiro, and Pi, with auto-detection.
+- It supports ACP for agents without native adapters.
+- It has event and hook concepts such as `review.started`,
+  `review.completed`, `review.failed`, and `review.canceled`.
+- Its `refine` flow runs fixes in an isolated worktree and loops until reviews
+  pass or a max iteration limit is reached.
+
+Limitations:
+
+- RoboRev is review-job oriented, not a universal session/process/workspace
+  graph.
+- Its primary public daemon surface is REST/HTTP, while this project is
+  API-first over local JSON-RPC for the core daemon.
+- Agent activity is scoped to review/fix/analyze jobs; it will not expose all
+  arbitrary interactive coding sessions.
+
+Conclusion: RoboRev should be modeled as a review-job source. Each review,
+analysis, fix, or refine job can become a Score session with links to the repo,
+commit SHA or dirty diff, agent, verdict, and generated findings. RoboRev is
+also a strong reference for release discipline, local daemon ergonomics,
+OpenAPI/client generation, JSONL event streaming, git-hook integration, and
+safe ACP subprocess boundaries.
+
+Sources:
+
+- https://www.roborev.io/
+- https://github.com/roborev-dev/roborev
+- https://www.roborev.io/advanced/streaming/
+- https://www.roborev.io/advanced/acp/
+- https://www.roborev.io/agents/
+- https://www.roborev.io/guides/hooks/
+
 ### Symphony
 
 Symphony turns project work into isolated autonomous implementation runs. It watches work items, spawns agents, collects proof of work, and manages PR lifecycle.
@@ -395,6 +444,25 @@ Use public daemon/MCP APIs first:
 - reviewer/persona subprocesses -> child sessions only if exposed through public API or stable local DB schema.
 
 Avoid depending on private database shape unless the project accepts an adapter contract.
+
+### RoboRev Adapter
+
+Use public daemon APIs and event stream first:
+
+- `/api/jobs` -> review/fix/analyze job discovery.
+- `/api/review` and `/api/comments` -> artifact and finding metadata.
+- `/api/repos` and `/api/branches` -> workspace grouping.
+- `roborev stream` or daemon stream endpoint -> `events/subscribe` source.
+- `review.started` -> `working`.
+- `review.completed` with passing verdict -> `completed`.
+- `review.completed` with failing verdict -> `reviewable`.
+- `review.failed` -> `failed`.
+- `review.canceled` -> `stopped`.
+
+Map commit SHA, dirty diff marker, branch, repo, agent, verdict, job ID,
+findings, and fix/refine iteration metadata under `meta.roborev`. Avoid reading
+the private SQLite database unless the public API is insufficient and the schema
+is explicitly treated as stable.
 
 ### AgentDeck Adapter
 
