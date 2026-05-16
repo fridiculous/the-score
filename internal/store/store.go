@@ -268,6 +268,24 @@ func (s *Store) ListEdges() []model.Edge {
 	return out
 }
 
+func (s *Store) RemoveEdge(id string) bool {
+	s.mu.Lock()
+	_, existed := s.edges[id]
+	if existed {
+		delete(s.edges, id)
+	}
+	s.mu.Unlock()
+	if existed {
+		s.appendEvent(model.Event{
+			Type:    "graph.edge_removed",
+			EdgeID:  id,
+			Summary: "edge removed",
+			Source:  "native",
+		})
+	}
+	return existed
+}
+
 func (s *Store) Lineage(rootID string) model.Lineage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

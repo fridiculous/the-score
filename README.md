@@ -32,23 +32,31 @@ go run ./cmd/score sessions
 go run ./cmd/score processes
 ```
 
-To automatically observe a command as a session, run it through `score run`:
+Score passively detects known running agent processes, currently including
+`codex`, `claude`, `opencode`, `hermes`, `openclaw`, and `nanoclaw`. You do not
+need to launch those tools through Score for basic active-process visibility:
 
 ```bash
-go run ./cmd/score run --source native -- sleep 30
+go run ./cmd/score sessions --source codex
+```
+
+Passive process detection is low-confidence because it can only infer that a
+process is alive, not whether the underlying session is blocked, idle, or
+reviewable. On Unix, Score also tries to resolve the process cwd so the
+workspace column can populate.
+
+For commands Score launches itself, `score run` records stronger metadata,
+workspace identity, and parent/root session environment:
+
+```bash
+go run ./cmd/score run -- sleep 30
+go run ./cmd/score run -- codex
 ```
 
 While that command is running, another terminal will show it:
 
 ```bash
 go run ./cmd/score sessions
-```
-
-Use this shape for terminal agents that Score launches:
-
-```bash
-go run ./cmd/score run -- codex
-go run ./cmd/score run -- claude
 ```
 
 Stop the daemon:
@@ -135,13 +143,14 @@ This is the first headless MVP. It includes:
 - local JSON-RPC transport
 - session, workspace, lineage, source, and event models
 - process listing source
+- passive low-confidence process-to-session inference for common agent CLIs
 - native observation ingest API
 - source diagnostics for the planned core bundle
 
-The first implementation does not yet include Claude, Codex, OpenCode, tmux,
-git-worktree, MCP, or container-specific source implementations. They are
-represented as source diagnostics and are intended to be added behind the same
-API.
+The first implementation does not yet include deep Claude, Codex, OpenCode,
+tmux, git-worktree, MCP, or container-specific source implementations. The
+agent CLIs above have passive process probes; deeper telemetry is represented as
+source diagnostics and is intended to be added behind the same API.
 
 ## Contributing And Releases
 

@@ -94,6 +94,9 @@ func (h *Handler) Handle(method string, params json.RawMessage) (interface{}, *E
 		if err := decodeParams(params, &p); err != nil {
 			return nil, invalidParams(err)
 		}
+		if err := h.reconcileProcessSessions(); err != nil {
+			return nil, internalErr(err)
+		}
 		return h.store.ListSessions(store.SessionFilter{
 			All:       p.All,
 			Status:    p.Status,
@@ -221,6 +224,99 @@ func (h *Handler) Handle(method string, params json.RawMessage) (interface{}, *E
 	default:
 		return nil, &Error{Code: ErrCodeMethodNotFound, Message: "method not found: " + method}
 	}
+}
+
+func (h *Handler) reconcileProcessSessions() error {
+	processes, err := h.processes.ListProcesses()
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	seenEdges := map[string]bool{}
+	pidToSession := map[int]string{}
+	inferredProcesses := make([]model.Process, 0)
+	now := time.Now().UTC()
+	for _, proc := range processes {
+		session, ok := runtime.InferAgentProcessSession(proc, now)
+		if !ok {
+			continue
+		}
+		if session.CWD == "" {
+			if cwd, ok := runtime.LookupProcessCWD(proc.PID); ok {
+				proc.CWD = cwd
+				session.CWD = cwd
+				session.WorkspaceRoots = []string{cwd}
+				session.WorkspaceIDs = []string{"workspace:" + cwd}
+			}
+		}
+		if existing, err := h.store.GetSession(session.ID); err == nil {
+			if !isInferredProcessSession(existing) {
+				continue
+			}
+			session.StartedAt = existing.StartedAt
+		}
+		seen[session.ID] = true
+		pidToSession[proc.PID] = session.ID
+		inferredProcesses = append(inferredProcesses, proc)
+		h.store.UpsertSession(session)
+		if session.CWD != "" {
+			h.store.UpsertWorkspace(model.Workspace{
+				ID:         "workspace:" + session.CWD,
+				Kind:       "workspace",
+				Path:       session.CWD,
+				SessionIDs: []string{session.ID},
+				Source:     session.Source,
+				Confidence: model.ConfidenceLow,
+				ObservedAt: now,
+			})
+		}
+	}
+	for _, proc := range inferredProcesses {
+		parentID := pidToSession[proc.PPID]
+		childID := pidToSession[proc.PID]
+		if parentID == "" || childID == "" {
+			continue
+		}
+		if child, err := h.store.GetSession(childID); err == nil && isInferredProcessSession(child) {
+			child.ParentSessionID = parentID
+			child.RootSessionID = parentID
+			if parent, err := h.store.GetSession(parentID); err == nil && parent.RootSessionID != "" {
+				child.RootSessionID = parent.RootSessionID
+			}
+			h.store.UpsertSession(child)
+		}
+		edgeID := "process:spawned_by:" + childID + "->" + parentID
+		seenEdges[edgeID] = true
+		h.store.UpsertEdge(model.Edge{
+			ID:         edgeID,
+			From:       childID,
+			To:         parentID,
+			Type:       "spawned_by",
+			Source:     "process",
+			Confidence: model.ConfidenceLow,
+			ObservedAt: now,
+		})
+	}
+	for _, session := range h.store.ListSessions(store.SessionFilter{All: true}) {
+		if isInferredProcessSession(session) && !seen[session.ID] {
+			h.store.RemoveSession(session.ID)
+		}
+	}
+	for _, edge := range h.store.ListEdges() {
+		if strings.HasPrefix(edge.ID, "process:spawned_by:") && !seenEdges[edge.ID] {
+			h.store.RemoveEdge(edge.ID)
+		}
+	}
+	return nil
+}
+
+func isInferredProcessSession(session model.Session) bool {
+	processMeta, ok := session.Meta["process"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	inferred, _ := processMeta["inferred"].(bool)
+	return inferred
 }
 
 func (h *Handler) handleSubscribe(ctx context.Context, enc *json.Encoder, req Request) {
