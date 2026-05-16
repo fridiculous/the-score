@@ -51,6 +51,25 @@ func TestInferAgentProcessSessionFromArgv0(t *testing.T) {
 	}
 }
 
+func TestInferAgentProcessSessionFromLauncherScript(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "hermes")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := InferAgentProcessSession(model.Process{
+		ID:      "process:42",
+		PID:     42,
+		Command: "/Users/fridiculo",
+		Args:    "/Users/fridiculous/projects/hermes-agent/.venv/bin/python3 " + bin,
+	}, time.Now())
+	if !ok {
+		t.Fatal("expected launcher script to infer a session")
+	}
+	if session.Source != "hermes" {
+		t.Fatalf("source = %q", session.Source)
+	}
+}
+
 func TestInferAgentProcessSessionFromPathArgv0WhenCommandIsTruncated(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "codex")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0600); err != nil {
@@ -76,6 +95,7 @@ func TestInferAgentProcessSessionIgnoresMentionedAgentNames(t *testing.T) {
 		{ID: "process:2", PID: 2, Command: "score", Args: "run --source codex -- codex"},
 		{ID: "process:3", PID: 3, Command: "zsh", Args: "-lc codex"},
 		{ID: "process:4", PID: 4, Command: "/Applications/Co", Args: "/Applications/Codex.app/Contents/MacOS/Codex"},
+		{ID: "process:5", PID: 5, Command: "python3", Args: "python3 sync.py --provider hermes"},
 	}
 	for _, tc := range cases {
 		if session, ok := InferAgentProcessSession(tc, time.Now()); ok {

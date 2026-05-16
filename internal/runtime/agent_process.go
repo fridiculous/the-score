@@ -32,6 +32,15 @@ var knownLauncherCommands = map[string]bool{
 	"zsh":     true,
 }
 
+var knownScriptLauncherCommands = map[string]bool{
+	"bun":     true,
+	"deno":    true,
+	"node":    true,
+	"npx":     true,
+	"python":  true,
+	"python3": true,
+}
+
 func InferAgentProcessSession(proc model.Process, observedAt time.Time) (model.Session, bool) {
 	source, ok := inferAgentSource(proc)
 	if !ok {
@@ -94,13 +103,40 @@ func inferAgentSource(proc model.Process) (string, bool) {
 		return "", false
 	}
 	source, ok := knownAgentCommands[argv0Base]
-	if !ok {
-		return "", false
+	if ok {
+		if argv0Base == commandBase || knownLauncherCommands[commandBase] {
+			return source, true
+		}
+		if looksLikeCommandPath(argv0) && commandPathExists(argv0) {
+			return source, true
+		}
 	}
-	if argv0Base == commandBase || knownLauncherCommands[commandBase] {
+	if source, ok := inferLauncherScriptSource(commandBase, strings.Fields(proc.Args)); ok {
 		return source, true
 	}
-	if looksLikeCommandPath(argv0) && commandPathExists(argv0) {
+	return "", false
+}
+
+func inferLauncherScriptSource(commandBase string, args []string) (string, bool) {
+	if len(args) < 2 {
+		return "", false
+	}
+	argv0Base := normalizeCommandName(args[0])
+	if !knownScriptLauncherCommands[commandBase] && !knownScriptLauncherCommands[argv0Base] {
+		return "", false
+	}
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		base := normalizeCommandName(arg)
+		source, ok := knownAgentCommands[base]
+		if !ok {
+			return "", false
+		}
+		if looksLikeCommandPath(arg) && !commandPathExists(arg) {
+			return "", false
+		}
 		return source, true
 	}
 	return "", false
