@@ -28,7 +28,7 @@ func TestInferAgentProcessSessionFromCommand(t *testing.T) {
 	if session.Source != "codex" {
 		t.Fatalf("source = %q", session.Source)
 	}
-	if session.Status != model.StatusWorking {
+	if session.Status != model.StatusUnknown {
 		t.Fatalf("status = %q", session.Status)
 	}
 	if session.Confidence != model.ConfidenceLow {
@@ -101,5 +101,18 @@ func TestInferAgentProcessSessionIgnoresMentionedAgentNames(t *testing.T) {
 		if session, ok := InferAgentProcessSession(tc, time.Now()); ok {
 			t.Fatalf("unexpected session inferred for %#v: %#v", tc, session)
 		}
+	}
+}
+
+func TestSourcePackProcessFixtures(t *testing.T) {
+	report, err := RunSourceFixtureTests("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Total == 0 {
+		t.Fatal("expected fixture cases")
+	}
+	if report.Failed != 0 {
+		t.Fatalf("fixture failures = %#v", report.Results)
 	}
 }

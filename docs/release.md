@@ -26,6 +26,20 @@ Release impact:
 Before v1.0.0, breaking API changes may ship in minor versions, but release
 notes must call them out explicitly.
 
+## v0.0.1 Contract
+
+`v0.0.1` is the first API contract release. It should prove:
+
+- `score version`, `score version --daemon`, and `scored --version` report
+  compatible versions.
+- `daemon/info` includes daemon version, API version, source-pack version, build
+  commit, process ID, start time, and SQLite storage path.
+- SQLite persists sessions, workspaces, lineage edges, sources, and events.
+- Source Pack v0 declarations and process fixtures ship in-repo.
+- Release notes clearly state that the API is pre-1.0 but documented.
+
+Homebrew packaging can wait until after `v0.0.1` unless it is already trivial.
+
 ## Tracks
 
 Use three tracks once distribution exists:
@@ -69,6 +83,12 @@ Compatibility rules:
    go build ./cmd/score ./cmd/scored
    GOOS=linux GOARCH=amd64 go build ./cmd/score ./cmd/scored
    GOOS=windows GOARCH=amd64 go build ./cmd/score ./cmd/scored
+   ```
+
+   Release builds should embed the commit:
+
+   ```bash
+   go build -ldflags "-X github.com/fridiculous/the-score/internal/version.BuildCommit=$(git rev-parse --short HEAD)" ./cmd/score ./cmd/scored
    ```
 
 2. Review conventional commits since the previous tag and write release notes.

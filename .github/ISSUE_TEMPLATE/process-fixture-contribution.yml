@@ -1,0 +1,40 @@
+name: Process fixture contribution
+description: Contribute sanitized process fixtures for a source pack.
+title: "fixtures: add <source> process shape"
+labels: ["fixtures", "sources"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fixtures should contain process metadata only. Do not include prompts, transcripts, terminal output, API keys, or private customer data.
+  - type: input
+    id: source
+    attributes:
+      label: Source pack
+      placeholder: codex
+    validations:
+      required: true
+  - type: dropdown
+    id: expected-detection
+    attributes:
+      label: Expected detection
+      options:
+        - Detect as a session
+        - Treat as a false positive
+    validations:
+      required: true
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Fixture JSON or process table row
+      description: Include pid/ppid shape, command, args, cwd behavior, and OS. Sanitize paths if needed.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: confidence
+    attributes:
+      label: Confidence and provenance notes
+      description: Explain why this is process-only, structured source evidence, or a false positive.
+    validations:
+      required: true

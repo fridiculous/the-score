@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"github.com/fridiculous/the-score/internal/api"
 	"github.com/fridiculous/the-score/internal/client"
 	"github.com/fridiculous/the-score/internal/model"
+	"github.com/fridiculous/the-score/internal/version"
 )
 
 func main() {
@@ -26,6 +28,8 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "version":
+		runVersion(os.Args[2:])
 	case "start":
 		runStart(os.Args[2:])
 	case "stop":
@@ -53,6 +57,10 @@ func main() {
 	case "run":
 		runObservedCommand(os.Args[2:])
 	default:
+		if isSourceShortcut(os.Args[1]) {
+			runSourceShortcut(os.Args[1], os.Args[2:])
+			return
+		}
 		usage()
 		os.Exit(2)
 	}
@@ -62,20 +70,56 @@ func usage() {
 	fmt.Fprint(os.Stderr, `score is the CLI client for scored.
 
 Usage:
+  score version [--daemon] [--json]
   score start [--scored PATH]
   score stop
   score status [--json]
-  score sessions [--all] [--status working,blocked] [--workspace PATH] [--source ID] [--json]
+  score sessions [--all] [--status working,blocked] [--workspace PATH] [--source ID] [--watch] [--interval DURATION] [--refresh] [--json]
   score processes [--json]
   score workspaces [--json]
   score lineage [session-id] [--json]
   score events [--since N] [--watch] [--json]
   score history [--since N] [--json]
-  score sources [doctor [source-id]] [--json]
+  score sources [doctor [source-id] | test-fixtures [source-id]] [--json]
+  score mcp [--json]
   score inspect <id> [--json]
   score observe-session --id ID --status STATUS [--source ID] [--workspace PATH] [--activity TEXT]
   score run [--id ID] [--source ID] [--workspace PATH] [--title TEXT] -- COMMAND [ARGS...]
 `)
+}
+
+func runVersion(args []string) {
+	fs := flag.NewFlagSet("version", flag.ExitOnError)
+	daemon := fs.Bool("daemon", false, "")
+	asJSON := fs.Bool("json", false, "")
+	_ = fs.Parse(args)
+
+	cliVersion := map[string]string{
+		"client":      "score",
+		"version":     version.Version,
+		"apiVersion":  version.APIVersion,
+		"buildCommit": version.BuildCommit,
+	}
+	if !*daemon {
+		if *asJSON {
+			printJSON(cliVersion)
+			return
+		}
+		fmt.Printf("score %s api=%s commit=%s\n", version.Version, version.APIVersion, version.BuildCommit)
+		return
+	}
+
+	var info model.DaemonInfo
+	call("daemon/info", nil, &info)
+	if *asJSON {
+		printJSON(map[string]interface{}{
+			"client": cliVersion,
+			"daemon": info,
+		})
+		return
+	}
+	fmt.Printf("score %s api=%s commit=%s\n", version.Version, version.APIVersion, version.BuildCommit)
+	fmt.Printf("scored %s api=%s sourcePacks=%s commit=%s storage=%s\n", info.DaemonVersion, info.APIVersion, info.SourcePackVersion, info.BuildCommit, firstNonEmpty(info.StoragePath, "-"))
 }
 
 func runSessions(args []string) {
@@ -84,27 +128,155 @@ func runSessions(args []string) {
 	status := fs.String("status", "", "")
 	workspace := fs.String("workspace", "", "")
 	source := fs.String("source", "", "")
+	watch := fs.Bool("watch", false, "")
+	interval := fs.Duration("interval", time.Second, "")
+	refresh := fs.Bool("refresh", false, "")
 	asJSON := fs.Bool("json", false, "")
 	_ = fs.Parse(args)
+	if *interval <= 0 {
+		die(fmt.Errorf("--interval must be greater than zero"))
+	}
+	if *watch {
+		watchSessions(*all, *status, *workspace, *source, *interval, *refresh, *asJSON)
+		return
+	}
 
-	var sessions []model.Session
-	call("sessions/list", map[string]interface{}{
-		"all":       *all,
-		"status":    api.ParseStatusFilter(*status),
-		"workspace": *workspace,
-		"source":    *source,
-	}, &sessions)
+	sessions := fetchSessions(*all, *status, *workspace, *source, *refresh, false)
 	if *asJSON {
 		printJSON(sessions)
 		return
 	}
+	printSessions(sessions)
+}
+
+func watchSessions(all bool, status, workspace, source string, interval time.Duration, refresh bool, asJSON bool) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	order := newSessionOrder()
+	tick := 0
+
+	render := func() {
+		sessions := order.apply(fetchSessions(all, status, workspace, source, refresh, true))
+		if asJSON {
+			printJSON(sessions)
+			return
+		}
+		refreshStatus := fetchRefreshStatus()
+		clearScreen()
+		fmt.Printf("score sessions --watch  interval=%s  %s\n\n", interval, formatRefreshStatus(refreshStatus, tick))
+		printSessions(sessions)
+		tick++
+	}
+
+	render()
+	for {
+		select {
+		case <-ticker.C:
+			render()
+		case <-signals:
+			return
+		}
+	}
+}
+
+func fetchSessions(all bool, status, workspace, source string, forceRefresh bool, asyncRefresh bool) []model.Session {
+	var sessions []model.Session
+	call("sessions/list", map[string]interface{}{
+		"all":          all,
+		"status":       api.ParseStatusFilter(status),
+		"workspace":    workspace,
+		"source":       source,
+		"forceRefresh": forceRefresh,
+		"asyncRefresh": asyncRefresh,
+	}, &sessions)
+	return sessions
+}
+
+func fetchRefreshStatus() model.RefreshStatus {
+	var status model.RefreshStatus
+	if err := callErr("refresh/status", nil, &status); err != nil {
+		return model.RefreshStatus{}
+	}
+	return status
+}
+
+type sessionOrder struct {
+	positions map[string]int
+	next      int
+}
+
+func newSessionOrder() *sessionOrder {
+	return &sessionOrder{positions: make(map[string]int)}
+}
+
+func (o *sessionOrder) apply(sessions []model.Session) []model.Session {
+	for _, session := range sessions {
+		if _, ok := o.positions[session.ID]; ok {
+			continue
+		}
+		o.positions[session.ID] = o.next
+		o.next++
+	}
+	out := append([]model.Session(nil), sessions...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return o.positions[out[i].ID] < o.positions[out[j].ID]
+	})
+	return out
+}
+
+func formatRefreshStatus(status model.RefreshStatus, tick int) string {
+	processes := status.Processes
+	if processes.Running {
+		frames := []string{"-", "\\", "|", "/"}
+		return "refresh=processes:" + frames[tick%len(frames)]
+	}
+	if processes.LastError != "" {
+		return "refresh=processes:error"
+	}
+	if !processes.LastFinishedAt.IsZero() {
+		return fmt.Sprintf("refresh=processes:idle last=%s duration=%dms", humanDuration(time.Since(processes.LastFinishedAt)), processes.LastDurationMillis)
+	}
+	return "refresh=processes:waiting"
+}
+
+func printSessions(sessions []model.Session) {
+	if len(sessions) == 0 {
+		fmt.Println("No active sessions.")
+		fmt.Println("Create one with: score run -- <command>")
+		fmt.Println("Or report one with: score observe-session --id ID --status working")
+		return
+	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSTATUS\tATTENTION\tSOURCE\tWORKSPACE\tACTIVITY\tUPDATED")
+	fmt.Fprintln(w, "ID\tSTATUS\tATTENTION\tSOURCE\tWORKSPACE\tACTIVITY\tSEEN")
 	for _, s := range sessions {
-		updated := humanDuration(time.Since(s.LastActivityAt))
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Status, s.Attention, displaySource(s), displayWorkspace(s), firstNonEmpty(s.StatusDetail, s.Summary, s.Title), updated)
+		seen := humanDuration(time.Since(sessionSeenAt(s)))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Status, s.Attention, displaySource(s), displayWorkspace(s), firstNonEmpty(s.StatusDetail, s.Summary, s.Title), seen)
 	}
 	_ = w.Flush()
+}
+
+func sessionSeenAt(session model.Session) time.Time {
+	if !session.LastSeenAt.IsZero() {
+		return session.LastSeenAt
+	}
+	if !session.LastActivityAt.IsZero() {
+		return session.LastActivityAt
+	}
+	if !session.StartedAt.IsZero() {
+		return session.StartedAt
+	}
+	return time.Now().UTC()
+}
+
+func clearScreen() {
+	if os.Getenv("TERM") == "dumb" {
+		return
+	}
+	fmt.Print("\033[H\033[2J")
 }
 
 func runProcesses(args []string) {
@@ -158,6 +330,16 @@ func runLineage(args []string) {
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	if len(lineage.Sessions) == 0 && len(lineage.Edges) == 0 {
+		if sessionID == "" {
+			fmt.Fprintln(w, "No lineage yet.")
+			fmt.Fprintln(w, "Create linked sessions with: score run --parent <session-id> -- <command>")
+		} else {
+			fmt.Fprintf(w, "No lineage found for %s.\n", sessionID)
+		}
+		_ = w.Flush()
+		return
+	}
 	fmt.Fprintln(w, "SESSION\tSTATUS\tPARENT\tROOT\tACTIVITY")
 	for _, s := range lineage.Sessions {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Status, s.ParentSessionID, s.RootSessionID, firstNonEmpty(s.StatusDetail, s.Summary, s.Title))
@@ -237,6 +419,11 @@ func runSources(args []string) {
 		if len(args) > 1 {
 			params = map[string]string{"id": args[1]}
 		}
+	} else if len(args) > 0 && args[0] == "test-fixtures" {
+		method = "sources/testFixtures"
+		if len(args) > 1 {
+			params = map[string]string{"id": args[1]}
+		}
 	}
 	var raw interface{}
 	call(method, params, &raw)
@@ -245,6 +432,11 @@ func runSources(args []string) {
 		return
 	}
 	data, _ := json.Marshal(raw)
+	var report model.SourceFixtureReport
+	if err := json.Unmarshal(data, &report); err == nil && report.SourcePackVersion != "" {
+		printSourceFixtureReport(report)
+		return
+	}
 	var sources []model.Source
 	if err := json.Unmarshal(data, &sources); err == nil {
 		printSources(sources)
@@ -252,6 +444,32 @@ func runSources(args []string) {
 	}
 	var source model.Source
 	_ = json.Unmarshal(data, &source)
+	printSources([]model.Source{source})
+}
+
+func isSourceShortcut(command string) bool {
+	switch command {
+	case "native", "process", "git-worktree", "tmux", "claude", "codex", "opencode", "hermes", "openclaw", "nanoclaw", "mcp":
+		return true
+	default:
+		return false
+	}
+}
+
+func runSourceShortcut(id string, args []string) {
+	fs := flag.NewFlagSet(id, flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		usage()
+		os.Exit(2)
+	}
+	var source model.Source
+	call("sources/doctor", map[string]string{"id": id}, &source)
+	if *asJSON {
+		printJSON(source)
+		return
+	}
 	printSources([]model.Source{source})
 }
 
@@ -305,6 +523,7 @@ func runObserveSession(args []string) {
 		ID:              *id,
 		Status:          model.Status(*status),
 		StatusDetail:    *activity,
+		StatusSource:    *source,
 		Title:           *title,
 		Source:          *source,
 		CWD:             *workspace,
@@ -414,7 +633,8 @@ func runObservedCommand(args []string) {
 	}
 
 	runtimeID := "process:" + strconv.Itoa(cmd.Process.Pid)
-	upsertRunSession(*id, *source, *workspace, workspaceID, *title, *parent, *root, []string{runtimeID}, model.StatusWorking, "running: "+strings.Join(commandArgs, " "), startedAt, nil, commandArgs)
+	commandLabel := commandDisplay(commandArgs)
+	upsertRunSession(*id, *source, *workspace, workspaceID, *title, *parent, *root, []string{runtimeID}, model.StatusWorking, "running: "+commandLabel, startedAt, nil, commandArgs)
 	upsertRunWorkspace(workspaceID, *workspace, *id, *source)
 	if *parent != "" {
 		upsertRunEdge(*id, *parent, *source)
@@ -444,11 +664,11 @@ func runObservedCommand(args []string) {
 	endedAt := time.Now().UTC()
 
 	status := model.StatusCompleted
-	detail := "completed: " + strings.Join(commandArgs, " ")
+	detail := "completed: " + commandLabel
 	exitCode := 0
 	if stopped.Load() {
 		status = model.StatusStopped
-		detail = "stopped: " + strings.Join(commandArgs, " ")
+		detail = "stopped: " + commandLabel
 		exitCode = 130
 	} else if err != nil {
 		status = model.StatusFailed
@@ -472,12 +692,39 @@ func inferSource(command string) string {
 	return strings.ToLower(base)
 }
 
+func commandDisplay(commandArgs []string) string {
+	if len(commandArgs) == 0 {
+		return "command"
+	}
+	label := filepath.Base(commandArgs[0])
+	if label == "" || label == "." || label == string(filepath.Separator) {
+		label = "command"
+	}
+	argCount := len(commandArgs) - 1
+	if argCount <= 0 {
+		return label
+	}
+	if argCount == 1 {
+		return label + " (+1 arg)"
+	}
+	return fmt.Sprintf("%s (+%d args)", label, argCount)
+}
+
 func upsertRunSession(id, source, workspace, workspaceID, title, parent, root string, runtimeIDs []string, status model.Status, detail string, startedAt time.Time, endedAt *time.Time, commandArgs []string) {
 	var result model.Session
+	command := ""
+	if len(commandArgs) > 0 {
+		command = filepath.Base(commandArgs[0])
+	}
+	argCount := len(commandArgs) - 1
+	if argCount < 0 {
+		argCount = 0
+	}
 	call("observations/upsertSession", model.Session{
 		ID:              id,
 		Status:          status,
 		StatusDetail:    detail,
+		StatusSource:    source,
 		Title:           title,
 		Source:          source,
 		CWD:             workspace,
@@ -491,7 +738,8 @@ func upsertRunSession(id, source, workspace, workspaceID, title, parent, root st
 		EndedAt:         endedAt,
 		Meta: map[string]interface{}{
 			"run": map[string]interface{}{
-				"command": commandArgs,
+				"command":  command,
+				"argCount": argCount,
 			},
 		},
 	}, &result)
@@ -536,7 +784,7 @@ func callErr(method string, params interface{}, result interface{}) error {
 }
 
 func dieDaemon(err error) {
-	fmt.Fprintf(os.Stderr, "score: cannot reach scored: %v\nstart it with: scored\n", err)
+	fmt.Fprintf(os.Stderr, "score: cannot reach scored: %v\nstart it with: score start\n", err)
 	os.Exit(1)
 }
 
@@ -562,6 +810,12 @@ func printMaybeJSON(value interface{}, asJSON bool) {
 }
 
 func printEvents(events []model.Event) {
+	if len(events) == 0 {
+		fmt.Println("No events yet.")
+		fmt.Println("Generate history with: score run -- <command>")
+		fmt.Println("Or report metadata with: score observe-session --id ID --status working")
+		return
+	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "SEQ\tTYPE\tSESSION\tSOURCE\tSUMMARY\tOBSERVED")
 	for _, event := range events {
@@ -577,6 +831,25 @@ func printSources(sources []model.Source) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", source.ID, source.Status, source.SupportLevel, source.Kind, strings.Join(source.Capabilities, ","), strings.Join(source.Diagnostics, "; "))
 	}
 	_ = w.Flush()
+}
+
+func printSourceFixtureReport(report model.SourceFixtureReport) {
+	scope := "all"
+	if report.FilterSourceID != "" {
+		scope = report.FilterSourceID
+	}
+	fmt.Printf("source-pack fixtures scope=%s version=%s passed=%d failed=%d total=%d\n", scope, report.SourcePackVersion, report.Passed, report.Failed, report.Total)
+	for _, result := range report.Results {
+		status := "PASS"
+		if !result.Passed {
+			status = "FAIL"
+		}
+		if result.Diagnostic == "" {
+			fmt.Printf("%s\t%s\t%s\n", status, result.SourceID, result.Name)
+			continue
+		}
+		fmt.Printf("%s\t%s\t%s\t%s\n", status, result.SourceID, result.Name, result.Diagnostic)
+	}
 }
 
 func displaySource(s model.Session) string {

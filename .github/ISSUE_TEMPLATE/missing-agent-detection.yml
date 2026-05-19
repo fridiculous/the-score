@@ -1,0 +1,37 @@
+name: Missing agent detection
+description: Report an agent/source process shape Score should recognize.
+title: "sources: missing detection for <agent>"
+labels: ["sources", "fixtures"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Score needs process/source metadata, not prompts or transcripts. Remove secrets and private paths where possible.
+  - type: input
+    id: source
+    attributes:
+      label: Source or agent name
+      placeholder: Codex, Claude, OpenCode, Hermes, other
+    validations:
+      required: true
+  - type: textarea
+    id: process-shape
+    attributes:
+      label: Process shape
+      description: Paste sanitized command, args, parent process, cwd behavior, and operating system.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Score behavior
+      description: Describe the source ID, confidence level, diagnostics, and whether this should create a session.
+    validations:
+      required: true
+  - type: textarea
+    id: version
+    attributes:
+      label: Version details
+      description: Include source CLI version and `score version --daemon` output if available.
+      render: text

@@ -27,8 +27,11 @@ still report an interrupt exit code even though the daemon shuts down promptly.
 In another terminal:
 
 ```bash
+go run ./cmd/score version --daemon
 go run ./cmd/score sources
+go run ./cmd/score sources test-fixtures
 go run ./cmd/score sessions
+go run ./cmd/score sessions --watch
 go run ./cmd/score processes
 ```
 
@@ -93,6 +96,10 @@ The primary API is newline-delimited JSON-RPC over a local transport:
 
 Set `SCORE_SOCKET` to override the default address.
 
+Set `SCORE_DATA_DIR` to override the daemon's SQLite data directory. Otherwise
+`scored` stores `score.db` in the user-local app data directory for the current
+platform.
+
 Core methods:
 
 ```text
@@ -109,6 +116,7 @@ events/list
 events/subscribe
 sources/list
 sources/doctor
+sources/testFixtures
 ```
 
 Native observation ingest methods:
@@ -130,10 +138,27 @@ score lineage <id>  # parent/child and linked resource graph
 score events        # metadata events
 score history       # recent metadata timeline
 score sources       # integrations/sources and diagnostics
+score mcp           # MCP source diagnostics shortcut
 score inspect <id>  # full resource record
 ```
 
 All read commands support `--json`.
+
+## Native macOS Demo
+
+The example menu-bar app in [examples/macos/ScoreMenu](examples/macos/ScoreMenu)
+is a read-only API consumer. It lists active sessions grouped by
+source/status/workspace, shows daemon version and storage state, surfaces source
+diagnostics, and offers developer affordances for opening docs and copying the
+current JSON snapshot.
+
+```bash
+score start
+cd examples/macos/ScoreMenu
+swift run ScoreMenu
+```
+
+The app talks only to `scored`; it does not scan processes directly.
 
 ## Current Scope
 
@@ -143,9 +168,13 @@ This is the first headless MVP. It includes:
 - local JSON-RPC transport
 - session, workspace, lineage, source, and event models
 - process listing source
-- passive low-confidence process-to-session inference for common agent CLIs
+- passive low-confidence process-to-session inference for common agent CLIs,
+  with lifecycle tracking that separates process liveness from activity/status
 - native observation ingest API
 - source diagnostics for the planned core bundle
+- SQLite-backed local history for sessions, workspaces, lineage edges, sources,
+  and events
+- Source Pack v0 declarations and fixture validation for process probes
 
 The first implementation does not yet include deep Claude, Codex, OpenCode,
 tmux, git-worktree, MCP, or container-specific source implementations. The
@@ -155,5 +184,9 @@ source diagnostics and is intended to be added behind the same API.
 ## Contributing And Releases
 
 - Commit convention: [CONTRIBUTING.md](CONTRIBUTING.md)
+- API contract: [docs/api.md](docs/api.md)
+- Source packs: [docs/source-packs.md](docs/source-packs.md)
+- What Score sees: [docs/what-score-sees.md](docs/what-score-sees.md)
+- Native macOS demo: [examples/macos/ScoreMenu](examples/macos/ScoreMenu)
 - Release model: [docs/release.md](docs/release.md)
 - Repository guidance for future agents/contributors: [AGENTS.md](AGENTS.md)

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/fridiculous/the-score/internal/model"
 	"github.com/fridiculous/the-score/internal/store"
@@ -19,6 +20,16 @@ type staticProcessLister struct {
 }
 
 func (l staticProcessLister) ListProcesses() ([]model.Process, error) {
+	return l.processes, nil
+}
+
+type countingProcessLister struct {
+	count     int
+	processes []model.Process
+}
+
+func (l *countingProcessLister) ListProcesses() ([]model.Process, error) {
+	l.count++
 	return l.processes, nil
 }
 
@@ -47,6 +58,40 @@ func TestObservationUpsertAndSessionList(t *testing.T) {
 	}
 	if sessions[0].StatusDetail != "running tests" {
 		t.Fatalf("status detail = %q", sessions[0].StatusDetail)
+	}
+}
+
+func TestDaemonInfoReportsVersionContract(t *testing.T) {
+	st := store.New()
+	h := NewHandler(st, emptyProcessLister{})
+
+	raw, err := h.Handle("daemon/info", nil)
+	if err != nil {
+		t.Fatalf("daemon info error = %#v", err)
+	}
+	info, ok := raw.(model.DaemonInfo)
+	if !ok {
+		t.Fatalf("result type = %T", raw)
+	}
+	if info.DaemonVersion == "" || info.APIVersion == "" || info.SourcePackVersion == "" {
+		t.Fatalf("info missing version fields: %#v", info)
+	}
+}
+
+func TestSourceFixtureAPI(t *testing.T) {
+	st := store.New()
+	h := NewHandler(st, emptyProcessLister{})
+
+	raw, err := h.Handle("sources/testFixtures", nil)
+	if err != nil {
+		t.Fatalf("fixture error = %#v", err)
+	}
+	report, ok := raw.(model.SourceFixtureReport)
+	if !ok {
+		t.Fatalf("result type = %T", raw)
+	}
+	if report.Total == 0 || report.Failed != 0 {
+		t.Fatalf("report = %#v", report)
 	}
 }
 
@@ -81,8 +126,100 @@ func TestSessionsListInfersAgentProcesses(t *testing.T) {
 	if sessions[0].Source != "codex" {
 		t.Fatalf("source = %q", sessions[0].Source)
 	}
+	if sessions[0].Status != model.StatusUnknown {
+		t.Fatalf("status = %q", sessions[0].Status)
+	}
 	if sessions[0].CWD != "/repo" {
 		t.Fatalf("cwd = %q", sessions[0].CWD)
+	}
+}
+
+func TestSessionsListThrottlesProcessReconcile(t *testing.T) {
+	st := store.New()
+	lister := &countingProcessLister{processes: []model.Process{
+		{ID: "process:100", Kind: "process", PID: 100, PPID: 1, Command: "codex", Args: "codex", CWD: "/repo"},
+	}}
+	h := NewHandler(st, lister)
+
+	if _, err := h.Handle("sessions/list", nil); err != nil {
+		t.Fatalf("first list error = %#v", err)
+	}
+	if _, err := h.Handle("sessions/list", nil); err != nil {
+		t.Fatalf("second list error = %#v", err)
+	}
+	if lister.count != 1 {
+		t.Fatalf("process scans = %d, want 1", lister.count)
+	}
+	if _, err := h.Handle("sessions/list", mustJSON(t, map[string]bool{"forceRefresh": true})); err != nil {
+		t.Fatalf("forced list error = %#v", err)
+	}
+	if lister.count != 2 {
+		t.Fatalf("process scans after force refresh = %d, want 2", lister.count)
+	}
+}
+
+func TestProcessReconcileUpdatesSeenWithoutActivity(t *testing.T) {
+	st := store.New()
+	lister := &countingProcessLister{processes: []model.Process{
+		{ID: "process:100", Kind: "process", PID: 100, PPID: 1, Command: "codex", Args: "codex", CWD: "/repo"},
+	}}
+	h := NewHandler(st, lister)
+	h.processReconcileEvery = 0
+
+	raw, err := h.Handle("sessions/list", mustJSON(t, map[string]bool{"forceRefresh": true}))
+	if err != nil {
+		t.Fatalf("first list error = %#v", err)
+	}
+	first := raw.([]model.Session)[0]
+	if first.LastSeenAt.IsZero() || first.LastActivityAt.IsZero() {
+		t.Fatalf("missing lifecycle timestamps: %#v", first)
+	}
+	time.Sleep(time.Millisecond)
+	raw, err = h.Handle("sessions/list", mustJSON(t, map[string]bool{"forceRefresh": true}))
+	if err != nil {
+		t.Fatalf("second list error = %#v", err)
+	}
+	second := raw.([]model.Session)[0]
+	if !second.LastSeenAt.After(first.LastSeenAt) {
+		t.Fatalf("last seen did not advance: %s <= %s", second.LastSeenAt, first.LastSeenAt)
+	}
+	if !second.LastActivityAt.Equal(first.LastActivityAt) {
+		t.Fatalf("last activity changed: %s -> %s", first.LastActivityAt, second.LastActivityAt)
+	}
+	if !second.StatusUpdatedAt.Equal(first.StatusUpdatedAt) {
+		t.Fatalf("status updated changed: %s -> %s", first.StatusUpdatedAt, second.StatusUpdatedAt)
+	}
+}
+
+func TestProcessReconcileMarksMissingProcessDisconnected(t *testing.T) {
+	st := store.New()
+	lister := &countingProcessLister{processes: []model.Process{
+		{ID: "process:100", Kind: "process", PID: 100, PPID: 1, Command: "codex", Args: "codex", CWD: "/repo"},
+	}}
+	h := NewHandler(st, lister)
+	h.processReconcileEvery = 0
+	h.processDisconnectAfter = 0
+
+	if _, err := h.Handle("sessions/list", mustJSON(t, map[string]bool{"forceRefresh": true})); err != nil {
+		t.Fatalf("first list error = %#v", err)
+	}
+	lister.processes = nil
+	raw, err := h.Handle("sessions/list", mustJSON(t, map[string]bool{"forceRefresh": true}))
+	if err != nil {
+		t.Fatalf("second list error = %#v", err)
+	}
+	sessions := raw.([]model.Session)
+	if len(sessions) != 1 {
+		t.Fatalf("session count = %d", len(sessions))
+	}
+	if sessions[0].Status != model.StatusDisconnected {
+		t.Fatalf("status = %q", sessions[0].Status)
+	}
+	if sessions[0].StatusSource != "process" {
+		t.Fatalf("status source = %q", sessions[0].StatusSource)
+	}
+	if sessions[0].EndedAt == nil {
+		t.Fatal("endedAt was not set")
 	}
 }
 

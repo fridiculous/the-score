@@ -1,0 +1,154 @@
+{
+  "sourcePackVersion": "source-pack/v0",
+  "cases": [
+    {
+      "name": "codex direct command",
+      "sourceId": "codex",
+      "description": "Homebrew-style codex process with the command visible.",
+      "process": {
+        "id": "process:100",
+        "kind": "process",
+        "pid": 100,
+        "ppid": 1,
+        "command": "/opt/homebrew/bin/codex",
+        "args": "codex --model gpt-5",
+        "cwd": "/work/the-score",
+        "liveness": "running",
+        "source": "process",
+        "confidence": "low"
+      },
+      "wantDetected": true,
+      "wantSource": "codex",
+      "wantConfidence": "low",
+      "wantStatus": "unknown"
+    },
+    {
+      "name": "claude launcher argv0",
+      "sourceId": "claude",
+      "process": {
+        "id": "process:101",
+        "kind": "process",
+        "pid": 101,
+        "ppid": 1,
+        "command": "python3",
+        "args": "claude --dangerously-skip-permissions",
+        "cwd": "/work/app",
+        "liveness": "running",
+        "source": "process",
+        "confidence": "low"
+      },
+      "wantDetected": true,
+      "wantSource": "claude",
+      "wantConfidence": "low",
+      "wantStatus": "unknown"
+    },
+    {
+      "name": "hermes launcher backed cli",
+      "sourceId": "hermes",
+      "process": {
+        "id": "process:102",
+        "kind": "process",
+        "pid": 102,
+        "ppid": 1,
+        "command": "/Users/example/projects/hermes-agent/.venv/bin/python3",
+        "args": "python3 hermes --workspace /work/app",
+        "cwd": "/work/app",
+        "liveness": "running",
+        "source": "process",
+        "confidence": "low"
+      },
+      "wantDetected": true,
+      "wantSource": "hermes",
+      "wantConfidence": "low",
+      "wantStatus": "unknown"
+    },
+    {
+      "name": "opencode node launcher",
+      "sourceId": "opencode",
+      "process": {
+        "id": "process:103",
+        "kind": "process",
+        "pid": 103,
+        "ppid": 1,
+        "command": "node",
+        "args": "node opencode run",
+        "cwd": "/work/app",
+        "liveness": "running",
+        "source": "process",
+        "confidence": "low"
+      },
+      "wantDetected": true,
+      "wantSource": "opencode",
+      "wantConfidence": "low",
+      "wantStatus": "unknown"
+    },
+    {
+      "name": "codex app helper ignored",
+      "sourceId": "codex",
+      "process": {
+        "id": "process:200",
+        "kind": "process",
+        "pid": 200,
+        "ppid": 1,
+        "command": "/Applications/Codex.app/Contents/MacOS/Codex",
+        "args": "/Applications/Codex.app/Contents/MacOS/Codex --helper",
+        "cwd": "/Applications",
+        "liveness": "running",
+        "source": "process",
+        "confidence": "low"
+      },
+      "wantDetected": false
+    },
+    {
+      "name": "shell mention ignored",
+      "sourceId": "process",
+      "process": {
+        "id": "process:201",
+        "kind": "process",
+        "pid": 201,
+        "ppid": 1,
+        "command": "zsh",
+        "args": "-lc codex",
+        "cwd": "/work/app",
+        "liveness": "running",
+        "source": "process",
+        "confidence": "low"
+      },
+      "wantDetected": false
+    },
+    {
+      "name": "generic argument mention ignored",
+      "sourceId": "process",
+      "process": {
+        "id": "process:202",
+        "kind": "process",
+        "pid": 202,
+        "ppid": 1,
+        "command": "rg",
+        "args": "hermes",
+        "cwd": "/work/app",
+        "liveness": "running",
+        "source": "process",
+        "confidence": "low"
+      },
+      "wantDetected": false
+    },
+    {
+      "name": "provider flag mention ignored",
+      "sourceId": "process",
+      "process": {
+        "id": "process:203",
+        "kind": "process",
+        "pid": 203,
+        "ppid": 1,
+        "command": "python3",
+        "args": "python3 sync.py --provider hermes",
+        "cwd": "/work/app",
+        "liveness": "running",
+        "source": "process",
+        "confidence": "low"
+      },
+      "wantDetected": false
+    }
+  ]
+}

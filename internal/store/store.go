@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"sort"
 	"strings"
@@ -14,6 +15,8 @@ var ErrNotFound = errors.New("not found")
 
 type Store struct {
 	mu          sync.RWMutex
+	storagePath string
+	db          *sql.DB
 	sessions    map[string]model.Session
 	workspaces  map[string]model.Workspace
 	edges       map[string]model.Edge
@@ -36,64 +39,28 @@ func New() *Store {
 	}
 }
 
+func (s *Store) StoragePath() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.storagePath
+}
+
 func (s *Store) UpsertSession(session model.Session) model.Session {
 	now := time.Now().UTC()
 	if session.ID == "" {
 		return session
 	}
-	if session.Kind == "" {
-		session.Kind = "session"
-	}
-	if session.Status == "" {
-		session.Status = model.StatusUnknown
-	}
-	if session.Attention == "" {
-		session.Attention = deriveAttention(session.Status)
-	}
-	if session.Confidence == "" {
-		session.Confidence = model.ConfidenceUnknown
-	}
-	if session.Source == "" {
-		session.Source = "native"
-	}
-	if session.LastActivityAt.IsZero() {
-		session.LastActivityAt = now
-	}
-	if session.StartedAt.IsZero() {
-		session.StartedAt = session.LastActivityAt
-	}
-	if session.RootSessionID == "" {
-		if session.ParentSessionID != "" {
-			session.RootSessionID = session.ParentSessionID
-		} else {
-			session.RootSessionID = session.ID
-		}
-	}
 
 	s.mu.Lock()
 	old, existed := s.sessions[session.ID]
+	session = normalizeSession(session, old, existed, now)
 	s.sessions[session.ID] = session
 	s.mu.Unlock()
+	s.persistResource("sessions", session.ID, session)
 
-	eventType := "session.upserted"
-	summary := "session upserted"
-	if !existed {
-		eventType = "session.started"
-		summary = "session started"
-	} else if old.Status != session.Status {
-		eventType = "status.changed"
-		summary = string(old.Status) + " -> " + string(session.Status)
+	if event, ok := sessionLifecycleEvent(old, session, existed); ok {
+		s.appendEvent(event)
 	}
-	s.appendEvent(model.Event{
-		Type:      eventType,
-		SessionID: session.ID,
-		Summary:   summary,
-		Source:    session.Source,
-		Data: map[string]interface{}{
-			"status":    session.Status,
-			"attention": session.Attention,
-		},
-	})
 	return session
 }
 
@@ -105,14 +72,181 @@ func (s *Store) RemoveSession(id string) bool {
 	}
 	s.mu.Unlock()
 	if existed {
+		s.deleteResource("sessions", id)
+	}
+	if existed {
 		s.appendEvent(model.Event{
-			Type:      "session.removed",
+			Type:      string(model.EventSessionRemoved),
 			SessionID: id,
 			Summary:   "session removed",
 			Source:    "native",
 		})
 	}
 	return existed
+}
+
+func normalizeSession(session, old model.Session, existed bool, now time.Time) model.Session {
+	statusProvided := session.Status != ""
+	attentionProvided := session.Attention != ""
+	statusSourceProvided := session.StatusSource != ""
+
+	if session.Kind == "" {
+		session.Kind = firstNonEmpty(old.Kind, "session")
+	}
+	if !statusProvided {
+		session.Status = firstStatus(old.Status, model.StatusUnknown)
+	}
+	if session.Confidence == "" {
+		session.Confidence = firstConfidence(old.Confidence, model.ConfidenceUnknown)
+	}
+	if session.Source == "" {
+		session.Source = firstNonEmpty(old.Source, "native")
+	}
+	if session.Title == "" {
+		session.Title = old.Title
+	}
+	if session.Summary == "" {
+		session.Summary = old.Summary
+	}
+	if session.CWD == "" {
+		session.CWD = old.CWD
+	}
+	if len(session.WorkspaceRoots) == 0 {
+		session.WorkspaceRoots = old.WorkspaceRoots
+	}
+	if len(session.RuntimeIDs) == 0 {
+		session.RuntimeIDs = old.RuntimeIDs
+	}
+	if len(session.WorkspaceIDs) == 0 {
+		session.WorkspaceIDs = old.WorkspaceIDs
+	}
+	if len(session.ArtifactIDs) == 0 {
+		session.ArtifactIDs = old.ArtifactIDs
+	}
+	if session.Agent == (model.Agent{}) {
+		session.Agent = old.Agent
+	}
+	if session.Capabilities == (model.Capabilities{}) {
+		session.Capabilities = old.Capabilities
+	}
+	if session.Meta == nil {
+		session.Meta = old.Meta
+	}
+	if session.ParentSessionID == "" {
+		session.ParentSessionID = old.ParentSessionID
+	}
+	if session.RootSessionID == "" {
+		session.RootSessionID = old.RootSessionID
+	}
+	if session.EndedAt == nil && (isTerminal(session.Status) || session.Status == model.StatusDisconnected) {
+		session.EndedAt = old.EndedAt
+	}
+
+	if session.StartedAt.IsZero() {
+		session.StartedAt = firstTime(old.StartedAt, session.LastActivityAt, session.LastSeenAt, now)
+	}
+	if session.LastActivityAt.IsZero() {
+		session.LastActivityAt = firstTime(old.LastActivityAt, session.StartedAt, session.LastSeenAt, now)
+	}
+	if session.LastSeenAt.IsZero() {
+		session.LastSeenAt = firstTime(old.LastSeenAt, session.LastActivityAt, session.StartedAt, now)
+	}
+	if session.LastSeenAt.Before(session.LastActivityAt) {
+		session.LastSeenAt = session.LastActivityAt
+	}
+
+	statusChanged := !existed || old.Status != session.Status
+	if !attentionProvided {
+		if existed && !statusChanged && old.Attention != "" {
+			session.Attention = old.Attention
+		} else {
+			session.Attention = deriveAttention(session.Status)
+		}
+	}
+	if !statusSourceProvided {
+		if existed && !statusChanged && old.StatusSource != "" {
+			session.StatusSource = old.StatusSource
+		} else {
+			session.StatusSource = session.Source
+		}
+	}
+	if session.StatusUpdatedAt.IsZero() {
+		if existed && !statusChanged && !old.StatusUpdatedAt.IsZero() {
+			session.StatusUpdatedAt = old.StatusUpdatedAt
+		} else {
+			session.StatusUpdatedAt = firstTime(session.LastActivityAt, session.LastSeenAt, session.StartedAt, now)
+		}
+	}
+	if session.RootSessionID == "" {
+		if session.ParentSessionID != "" {
+			session.RootSessionID = session.ParentSessionID
+		} else {
+			session.RootSessionID = session.ID
+		}
+	}
+	return session
+}
+
+func sessionLifecycleEvent(old, session model.Session, existed bool) (model.Event, bool) {
+	event := model.Event{
+		SessionID: session.ID,
+		Source:    session.StatusSource,
+		Data: map[string]interface{}{
+			"status":          session.Status,
+			"attention":       session.Attention,
+			"statusSource":    session.StatusSource,
+			"statusUpdatedAt": session.StatusUpdatedAt,
+			"lastSeenAt":      session.LastSeenAt,
+			"lastActivityAt":  session.LastActivityAt,
+		},
+	}
+	if event.Source == "" {
+		event.Source = session.Source
+	}
+	if !existed {
+		event.Type = string(model.EventSessionStarted)
+		event.Summary = "session started"
+		if isProcessInferredSession(session) {
+			event.Type = string(model.EventSessionDetected)
+			event.Summary = "session detected"
+		}
+		return event, true
+	}
+	if old.Status != session.Status {
+		event.Type = string(eventTypeForStatus(session.Status))
+		event.Summary = string(old.Status) + " -> " + string(session.Status)
+		event.Data["previousStatus"] = old.Status
+		return event, true
+	}
+	if session.LastActivityAt.After(old.LastActivityAt) {
+		event.Type = string(model.EventSessionActivity)
+		event.Summary = firstNonEmpty(session.StatusDetail, session.Summary, "session activity")
+		return event, true
+	}
+	return model.Event{}, false
+}
+
+func eventTypeForStatus(status model.Status) model.EventType {
+	switch status {
+	case model.StatusWorking:
+		return model.EventSessionActivity
+	case model.StatusBlocked:
+		return model.EventSessionWaiting
+	case model.StatusReviewable:
+		return model.EventSessionReviewable
+	case model.StatusIdle:
+		return model.EventSessionIdle
+	case model.StatusCompleted:
+		return model.EventSessionCompleted
+	case model.StatusFailed:
+		return model.EventSessionFailed
+	case model.StatusStopped:
+		return model.EventSessionStopped
+	case model.StatusDisconnected:
+		return model.EventSessionDisconnected
+	default:
+		return model.EventSessionStatusChanged
+	}
 }
 
 func (s *Store) GetSession(id string) (model.Session, error) {
@@ -188,12 +322,12 @@ func (s *Store) UpsertWorkspace(workspace model.Workspace) model.Workspace {
 	_, existed := s.workspaces[workspace.ID]
 	s.workspaces[workspace.ID] = workspace
 	s.mu.Unlock()
-	eventType := "workspace.upserted"
-	if !existed {
-		eventType = "workspace.discovered"
+	s.persistResource("workspaces", workspace.ID, workspace)
+	if existed {
+		return workspace
 	}
 	s.appendEvent(model.Event{
-		Type:        eventType,
+		Type:        "workspace.discovered",
 		WorkspaceID: workspace.ID,
 		Summary:     workspace.Path,
 		Source:      workspace.Source,
@@ -242,8 +376,12 @@ func (s *Store) UpsertEdge(edge model.Edge) model.Edge {
 	_, existed := s.edges[edge.ID]
 	s.edges[edge.ID] = edge
 	s.mu.Unlock()
+	s.persistResource("edges", edge.ID, edge)
+	if existed {
+		return edge
+	}
 	eventType := "graph.edge_upserted"
-	if !existed && (edge.Type == "spawned_by" || edge.Type == "delegated_by") {
+	if edge.Type == "spawned_by" || edge.Type == "delegated_by" {
 		eventType = "child.spawned"
 	}
 	s.appendEvent(model.Event{
@@ -275,6 +413,9 @@ func (s *Store) RemoveEdge(id string) bool {
 		delete(s.edges, id)
 	}
 	s.mu.Unlock()
+	if existed {
+		s.deleteResource("edges", id)
+	}
 	if existed {
 		s.appendEvent(model.Event{
 			Type:    "graph.edge_removed",
@@ -340,6 +481,7 @@ func (s *Store) UpsertSource(source model.Source) model.Source {
 	s.mu.Lock()
 	s.sources[source.ID] = source
 	s.mu.Unlock()
+	s.persistResource("sources", source.ID, source)
 	return source
 }
 
@@ -433,6 +575,7 @@ func (s *Store) appendEvent(event model.Event) model.Event {
 		subscribers = append(subscribers, ch)
 	}
 	s.mu.Unlock()
+	s.persistEvent(event)
 
 	for _, ch := range subscribers {
 		select {
@@ -497,4 +640,49 @@ func sessionMatchesWorkspace(session model.Session, query string) bool {
 		}
 	}
 	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
+}
+
+func firstStatus(values ...model.Status) model.Status {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstConfidence(values ...model.Confidence) model.Confidence {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func isProcessInferredSession(session model.Session) bool {
+	processMeta, ok := session.Meta["process"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	inferred, _ := processMeta["inferred"].(bool)
+	return inferred
 }

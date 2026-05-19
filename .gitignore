@@ -6,6 +6,10 @@
 *.test
 coverage.out
 
+# SwiftPM build output
+.build/
+examples/**/.build/
+
 # Local environment
 .env
 .env.*

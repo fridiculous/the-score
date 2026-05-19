@@ -2,6 +2,32 @@ package model
 
 import "time"
 
+type DaemonInfo struct {
+	Name              string    `json:"name"`
+	Daemon            string    `json:"daemon"`
+	DaemonVersion     string    `json:"daemonVersion"`
+	APIVersion        string    `json:"apiVersion"`
+	API               string    `json:"api,omitempty"`
+	SourcePackVersion string    `json:"sourcePackVersion"`
+	BuildCommit       string    `json:"buildCommit"`
+	PID               int       `json:"pid"`
+	StartedAt         time.Time `json:"startedAt"`
+	StoragePath       string    `json:"storagePath,omitempty"`
+}
+
+type RefreshStatus struct {
+	Processes RefreshTaskStatus `json:"processes"`
+}
+
+type RefreshTaskStatus struct {
+	Running            bool      `json:"running"`
+	LastStartedAt      time.Time `json:"lastStartedAt,omitempty"`
+	LastFinishedAt     time.Time `json:"lastFinishedAt,omitempty"`
+	LastDurationMillis int64     `json:"lastDurationMillis,omitempty"`
+	NextEligibleAt     time.Time `json:"nextEligibleAt,omitempty"`
+	LastError          string    `json:"lastError,omitempty"`
+}
+
 type Status string
 
 const (
@@ -14,6 +40,25 @@ const (
 	StatusStopped      Status = "stopped"
 	StatusDisconnected Status = "disconnected"
 	StatusUnknown      Status = "unknown"
+)
+
+type EventType string
+
+const (
+	EventSessionDetected      EventType = "session.detected"
+	EventSessionStarted       EventType = "session.started"
+	EventSessionHeartbeat     EventType = "session.heartbeat"
+	EventSessionActivity      EventType = "session.activity"
+	EventSessionWaiting       EventType = "session.waiting_for_input"
+	EventSessionReviewable    EventType = "session.reviewable"
+	EventSessionIdle          EventType = "session.idle"
+	EventSessionCompleted     EventType = "session.completed"
+	EventSessionFailed        EventType = "session.failed"
+	EventSessionStopped       EventType = "session.stopped"
+	EventSessionDisconnected  EventType = "session.disconnected"
+	EventSessionStatusChanged EventType = "session.status_changed"
+	EventSessionUpdated       EventType = "session.updated"
+	EventSessionRemoved       EventType = "session.removed"
 )
 
 type Confidence string
@@ -49,6 +94,14 @@ type Capabilities struct {
 	Approvals  bool `json:"approvals"`
 }
 
+type SourceLifecycle struct {
+	CanDetectLiveness bool `json:"canDetectLiveness"`
+	CanDetectStart    bool `json:"canDetectStart"`
+	CanDetectActivity bool `json:"canDetectActivity"`
+	CanDetectWaiting  bool `json:"canDetectWaiting"`
+	CanDetectTerminal bool `json:"canDetectTerminal"`
+}
+
 type Session struct {
 	ID              string                 `json:"id"`
 	Kind            string                 `json:"kind"`
@@ -58,11 +111,14 @@ type Session struct {
 	Status          Status                 `json:"status"`
 	Attention       Attention              `json:"attention"`
 	StatusDetail    string                 `json:"statusDetail,omitempty"`
+	StatusUpdatedAt time.Time              `json:"statusUpdatedAt,omitempty"`
+	StatusSource    string                 `json:"statusSource,omitempty"`
 	Confidence      Confidence             `json:"confidence"`
 	Source          string                 `json:"source"`
 	CWD             string                 `json:"cwd,omitempty"`
 	WorkspaceRoots  []string               `json:"workspaceRoots,omitempty"`
 	StartedAt       time.Time              `json:"startedAt,omitempty"`
+	LastSeenAt      time.Time              `json:"lastSeenAt,omitempty"`
 	LastActivityAt  time.Time              `json:"lastActivityAt"`
 	EndedAt         *time.Time             `json:"endedAt,omitempty"`
 	ParentSessionID string                 `json:"parentSessionId,omitempty"`
@@ -127,18 +183,39 @@ type Event struct {
 }
 
 type Source struct {
-	ID              string                 `json:"id"`
-	Name            string                 `json:"name"`
-	Kind            string                 `json:"kind"`
-	Enabled         bool                   `json:"enabled"`
-	Status          string                 `json:"status"`
-	SupportLevel    string                 `json:"supportLevel"`
-	DetectedVersion string                 `json:"detectedAgentVersion,omitempty"`
-	DetectedPath    string                 `json:"detectedAgentPath,omitempty"`
-	Capabilities    []string               `json:"capabilities,omitempty"`
-	Diagnostics     []string               `json:"diagnostics,omitempty"`
-	ObservedAt      time.Time              `json:"observedAt"`
-	Meta            map[string]interface{} `json:"meta,omitempty"`
+	ID                string                 `json:"id"`
+	Name              string                 `json:"name"`
+	Kind              string                 `json:"kind"`
+	Enabled           bool                   `json:"enabled"`
+	Status            string                 `json:"status"`
+	SupportLevel      string                 `json:"supportLevel"`
+	SourcePackVersion string                 `json:"sourcePackVersion,omitempty"`
+	DetectedVersion   string                 `json:"detectedAgentVersion,omitempty"`
+	DetectedPath      string                 `json:"detectedAgentPath,omitempty"`
+	Capabilities      []string               `json:"capabilities,omitempty"`
+	Lifecycle         SourceLifecycle        `json:"lifecycle"`
+	Provenance        []string               `json:"provenance,omitempty"`
+	ConfidenceRules   []string               `json:"confidenceRules,omitempty"`
+	VersionProfiles   []string               `json:"versionProfiles,omitempty"`
+	Diagnostics       []string               `json:"diagnostics,omitempty"`
+	ObservedAt        time.Time              `json:"observedAt"`
+	Meta              map[string]interface{} `json:"meta,omitempty"`
+}
+
+type SourceFixtureReport struct {
+	SourcePackVersion string                `json:"sourcePackVersion"`
+	FilterSourceID    string                `json:"filterSourceId,omitempty"`
+	Total             int                   `json:"total"`
+	Passed            int                   `json:"passed"`
+	Failed            int                   `json:"failed"`
+	Results           []SourceFixtureResult `json:"results"`
+}
+
+type SourceFixtureResult struct {
+	Name       string `json:"name"`
+	SourceID   string `json:"sourceId"`
+	Passed     bool   `json:"passed"`
+	Diagnostic string `json:"diagnostic,omitempty"`
 }
 
 type Lineage struct {

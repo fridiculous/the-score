@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/fridiculous/the-score/internal/store"
 )
 
 func TestServeExitsWhenContextCanceled(t *testing.T) {
@@ -16,8 +18,9 @@ func TestServeExitsWhenContextCanceled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	server := NewWithStore(slog.Default(), store.New())
 	go func() {
-		done <- New(slog.Default()).Serve(ctx, listener)
+		done <- server.Serve(ctx, listener)
 	}()
 
 	cancel()

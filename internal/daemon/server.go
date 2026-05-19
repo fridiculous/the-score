@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/fridiculous/the-score/internal/api"
-	"github.com/fridiculous/the-score/internal/model"
 	"github.com/fridiculous/the-score/internal/runtime"
+	"github.com/fridiculous/the-score/internal/sources"
 	"github.com/fridiculous/the-score/internal/store"
 )
 
@@ -19,14 +19,33 @@ type Server struct {
 	logger  *slog.Logger
 }
 
-func New(logger *slog.Logger) *Server {
-	st := store.New()
+func New(logger *slog.Logger) (*Server, error) {
+	st, err := store.NewSQLite("")
+	if err != nil {
+		return nil, err
+	}
+	seedSources(st)
+	return &Server{
+		store:   st,
+		handler: api.NewHandler(st, runtime.SystemProcessLister{}),
+		logger:  logger,
+	}, nil
+}
+
+func NewWithStore(logger *slog.Logger, st *store.Store) *Server {
 	seedSources(st)
 	return &Server{
 		store:   st,
 		handler: api.NewHandler(st, runtime.SystemProcessLister{}),
 		logger:  logger,
 	}
+}
+
+func (s *Server) Close() error {
+	if s.store == nil {
+		return nil
+	}
+	return s.store.Close()
 }
 
 func (s *Server) SetShutdown(shutdown func()) {
@@ -58,20 +77,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 
 func seedSources(st *store.Store) {
 	now := time.Now().UTC()
-	sources := []model.Source{
-		{ID: "native", Name: "Native Observation API", Kind: "api", Enabled: true, Status: "active", SupportLevel: "native", Capabilities: []string{"sessions", "workspaces", "lineage", "events"}, ObservedAt: now},
-		{ID: "process", Name: "Process Table", Kind: "runtime", Enabled: true, Status: "active", SupportLevel: "compatible", Capabilities: []string{"processes"}, ObservedAt: now},
-		{ID: "git-worktree", Name: "Git Worktree", Kind: "workspace", Enabled: true, Status: "planned", SupportLevel: "not_installed", Capabilities: []string{"workspaces"}, Diagnostics: []string{"workspace discovery is declared but not implemented in this build"}, ObservedAt: now},
-		{ID: "tmux", Name: "tmux", Kind: "runtime", Enabled: true, Status: "planned", SupportLevel: "not_installed", Capabilities: []string{"processes", "sessions"}, Diagnostics: []string{"tmux integration is declared but not implemented in this build"}, ObservedAt: now},
-		{ID: "claude", Name: "Claude Code", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper Claude session telemetry is not implemented in this build"}, ObservedAt: now},
-		{ID: "codex", Name: "Codex", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper Codex session telemetry is not implemented in this build"}, ObservedAt: now},
-		{ID: "opencode", Name: "OpenCode", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper OpenCode session telemetry is not implemented in this build"}, ObservedAt: now},
-		{ID: "hermes", Name: "Hermes", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper Hermes session telemetry is not implemented in this build"}, ObservedAt: now},
-		{ID: "openclaw", Name: "OpenClaw", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper OpenClaw session telemetry is not implemented in this build"}, ObservedAt: now},
-		{ID: "nanoclaw", Name: "NanoClaw", Kind: "session", Enabled: true, Status: "partial", SupportLevel: "process_probe", Capabilities: []string{"sessions", "processes"}, Diagnostics: []string{"passive process detection is active; deeper NanoClaw session telemetry is not implemented in this build"}, ObservedAt: now},
-		{ID: "mcp", Name: "MCP", Kind: "protocol", Enabled: true, Status: "planned", SupportLevel: "not_installed", Capabilities: []string{"tool_calls", "events"}, Diagnostics: []string{"MCP source is part of the core bundle but not implemented in this build"}, ObservedAt: now},
-	}
-	for _, source := range sources {
+	for _, source := range sources.DefaultSources(now) {
 		st.UpsertSource(source)
 	}
 }

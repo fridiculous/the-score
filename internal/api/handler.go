@@ -9,22 +9,34 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fridiculous/the-score/internal/model"
 	"github.com/fridiculous/the-score/internal/runtime"
 	"github.com/fridiculous/the-score/internal/store"
+	"github.com/fridiculous/the-score/internal/version"
 )
 
 type Handler struct {
-	store     *store.Store
-	processes runtime.ProcessLister
-	startedAt time.Time
-	shutdown  func()
+	store                  *store.Store
+	processes              runtime.ProcessLister
+	startedAt              time.Time
+	shutdown               func()
+	processMu              sync.Mutex
+	processReconcileEvery  time.Duration
+	processDisconnectAfter time.Duration
+	processRefresh         model.RefreshTaskStatus
 }
 
 func NewHandler(st *store.Store, processes runtime.ProcessLister) *Handler {
-	return &Handler{store: st, processes: processes, startedAt: time.Now().UTC()}
+	return &Handler{
+		store:                  st,
+		processes:              processes,
+		startedAt:              time.Now().UTC(),
+		processReconcileEvery:  2 * time.Second,
+		processDisconnectAfter: 10 * time.Second,
+	}
 }
 
 func (h *Handler) SetShutdown(shutdown func()) {
@@ -66,12 +78,17 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 func (h *Handler) Handle(method string, params json.RawMessage) (interface{}, *Error) {
 	switch method {
 	case "daemon/info":
-		return map[string]interface{}{
-			"name":      "The Score",
-			"daemon":    "scored",
-			"api":       "score-jsonrpc/v1",
-			"pid":       os.Getpid(),
-			"startedAt": h.startedAt,
+		return model.DaemonInfo{
+			Name:              "The Score",
+			Daemon:            "scored",
+			DaemonVersion:     version.Version,
+			APIVersion:        version.APIVersion,
+			API:               version.APIVersion,
+			SourcePackVersion: version.SourcePackVersion,
+			BuildCommit:       version.BuildCommit,
+			PID:               os.Getpid(),
+			StartedAt:         h.startedAt,
+			StoragePath:       h.store.StoragePath(),
 		}, nil
 	case "daemon/shutdown":
 		if h.shutdown == nil {
@@ -84,18 +101,26 @@ func (h *Handler) Handle(method string, params json.RawMessage) (interface{}, *E
 		return map[string]bool{"shutdown": true}, nil
 	case "health/check":
 		return map[string]string{"status": "ok"}, nil
+	case "refresh/status":
+		return h.refreshStatus(), nil
 	case "sessions/list":
 		var p struct {
-			All       bool     `json:"all"`
-			Status    []string `json:"status"`
-			Workspace string   `json:"workspace"`
-			Source    string   `json:"source"`
+			All          bool     `json:"all"`
+			Status       []string `json:"status"`
+			Workspace    string   `json:"workspace"`
+			Source       string   `json:"source"`
+			ForceRefresh bool     `json:"forceRefresh"`
+			AsyncRefresh bool     `json:"asyncRefresh"`
 		}
 		if err := decodeParams(params, &p); err != nil {
 			return nil, invalidParams(err)
 		}
-		if err := h.reconcileProcessSessions(); err != nil {
-			return nil, internalErr(err)
+		if p.AsyncRefresh {
+			h.startProcessReconcile(p.ForceRefresh)
+		} else {
+			if err := h.reconcileProcessSessions(p.ForceRefresh); err != nil {
+				return nil, internalErr(err)
+			}
 		}
 		return h.store.ListSessions(store.SessionFilter{
 			All:       p.All,
@@ -186,6 +211,18 @@ func (h *Handler) Handle(method string, params json.RawMessage) (interface{}, *E
 			return nil, notFound("source", p.ID)
 		}
 		return source, nil
+	case "sources/testFixtures":
+		var p struct {
+			ID string `json:"id"`
+		}
+		if err := decodeParams(params, &p); err != nil {
+			return nil, invalidParams(err)
+		}
+		report, err := runtime.RunSourceFixtureTests(p.ID)
+		if err != nil {
+			return nil, internalErr(err)
+		}
+		return report, nil
 	case "observations/upsertSession":
 		var session model.Session
 		if err := decodeParams(params, &session); err != nil {
@@ -226,13 +263,72 @@ func (h *Handler) Handle(method string, params json.RawMessage) (interface{}, *E
 	}
 }
 
-func (h *Handler) reconcileProcessSessions() error {
+func (h *Handler) reconcileProcessSessions(force bool) error {
+	startedAt, ok := h.beginProcessReconcile(force)
+	if !ok {
+		return nil
+	}
+	err := h.runProcessReconcile()
+	h.finishProcessReconcile(startedAt, err)
+	return err
+}
+
+func (h *Handler) startProcessReconcile(force bool) {
+	startedAt, ok := h.beginProcessReconcile(force)
+	if !ok {
+		return
+	}
+	go func() {
+		err := h.runProcessReconcile()
+		h.finishProcessReconcile(startedAt, err)
+	}()
+}
+
+func (h *Handler) beginProcessReconcile(force bool) (time.Time, bool) {
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
+	now := time.Now().UTC()
+	if h.processRefresh.Running {
+		return time.Time{}, false
+	}
+	if !force && !h.processRefresh.LastFinishedAt.IsZero() && now.Before(h.processRefresh.LastFinishedAt.Add(h.processReconcileEvery)) {
+		return time.Time{}, false
+	}
+	h.processRefresh.Running = true
+	h.processRefresh.LastStartedAt = now
+	h.processRefresh.LastDurationMillis = 0
+	h.processRefresh.LastError = ""
+	return now, true
+}
+
+func (h *Handler) finishProcessReconcile(startedAt time.Time, err error) {
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
+	finishedAt := time.Now().UTC()
+	h.processRefresh.Running = false
+	h.processRefresh.LastFinishedAt = finishedAt
+	h.processRefresh.LastDurationMillis = finishedAt.Sub(startedAt).Milliseconds()
+	h.processRefresh.NextEligibleAt = finishedAt.Add(h.processReconcileEvery)
+	if err != nil {
+		h.processRefresh.LastError = err.Error()
+	}
+}
+
+func (h *Handler) refreshStatus() model.RefreshStatus {
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
+	return model.RefreshStatus{Processes: h.processRefresh}
+}
+
+func (h *Handler) runProcessReconcile() error {
 	processes, err := h.processes.ListProcesses()
 	if err != nil {
 		return err
 	}
 	seen := map[string]bool{}
-	seenEdges := map[string]bool{}
 	pidToSession := map[int]string{}
 	inferredProcesses := make([]model.Process, 0)
 	now := time.Now().UTC()
@@ -241,6 +337,33 @@ func (h *Handler) reconcileProcessSessions() error {
 		if !ok {
 			continue
 		}
+		if existing, err := h.store.GetSession(session.ID); err == nil {
+			if !isInferredProcessSession(existing) {
+				continue
+			}
+			session.StartedAt = existing.StartedAt
+			session.LastActivityAt = existing.LastActivityAt
+			session.Status = existing.Status
+			session.StatusDetail = existing.StatusDetail
+			session.Attention = existing.Attention
+			session.StatusUpdatedAt = existing.StatusUpdatedAt
+			session.StatusSource = existing.StatusSource
+			session.EndedAt = existing.EndedAt
+			if session.Status == model.StatusDisconnected {
+				session.Status = model.StatusUnknown
+				session.StatusDetail = "process detected: " + session.Title
+				session.Attention = ""
+				session.StatusUpdatedAt = now
+				session.StatusSource = "process"
+				session.EndedAt = nil
+			}
+			if existing.CWD != "" {
+				proc.CWD = existing.CWD
+				session.CWD = existing.CWD
+				session.WorkspaceRoots = existing.WorkspaceRoots
+				session.WorkspaceIDs = existing.WorkspaceIDs
+			}
+		}
 		if session.CWD == "" {
 			if cwd, ok := runtime.LookupProcessCWD(proc.PID); ok {
 				proc.CWD = cwd
@@ -248,12 +371,6 @@ func (h *Handler) reconcileProcessSessions() error {
 				session.WorkspaceRoots = []string{cwd}
 				session.WorkspaceIDs = []string{"workspace:" + cwd}
 			}
-		}
-		if existing, err := h.store.GetSession(session.ID); err == nil {
-			if !isInferredProcessSession(existing) {
-				continue
-			}
-			session.StartedAt = existing.StartedAt
 		}
 		seen[session.ID] = true
 		pidToSession[proc.PID] = session.ID
@@ -286,7 +403,6 @@ func (h *Handler) reconcileProcessSessions() error {
 			h.store.UpsertSession(child)
 		}
 		edgeID := "process:spawned_by:" + childID + "->" + parentID
-		seenEdges[edgeID] = true
 		h.store.UpsertEdge(model.Edge{
 			ID:         edgeID,
 			From:       childID,
@@ -299,15 +415,37 @@ func (h *Handler) reconcileProcessSessions() error {
 	}
 	for _, session := range h.store.ListSessions(store.SessionFilter{All: true}) {
 		if isInferredProcessSession(session) && !seen[session.ID] {
-			h.store.RemoveSession(session.ID)
-		}
-	}
-	for _, edge := range h.store.ListEdges() {
-		if strings.HasPrefix(edge.ID, "process:spawned_by:") && !seenEdges[edge.ID] {
-			h.store.RemoveEdge(edge.ID)
+			lastSeenAt := session.LastSeenAt
+			if lastSeenAt.IsZero() {
+				lastSeenAt = session.LastActivityAt
+			}
+			if h.processDisconnectAfter <= 0 || now.Sub(lastSeenAt) >= h.processDisconnectAfter {
+				if session.Status == model.StatusDisconnected {
+					continue
+				}
+				session.Status = model.StatusDisconnected
+				session.StatusDetail = processMissingDetail(session)
+				session.Attention = ""
+				session.StatusSource = "process"
+				session.StatusUpdatedAt = now
+				endedAt := now
+				session.EndedAt = &endedAt
+				h.store.UpsertSession(session)
+			}
 		}
 	}
 	return nil
+}
+
+func processMissingDetail(session model.Session) string {
+	title := session.Title
+	if title == "" {
+		title = session.Source
+	}
+	if title == "" {
+		title = "process"
+	}
+	return "process missing: " + title
 }
 
 func isInferredProcessSession(session model.Session) bool {
